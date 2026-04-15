@@ -1,0 +1,247 @@
+// ivy_crypto_core.udl — UniFFI interface definition for Kotlin/Swift bindings
+// This generates type-safe, memory-managed Kotlin classes from the Rust core.
+
+namespace ivy_crypto_core {
+    // Identity generation
+    [Throws=LatticeError]
+    GhostIdentityBundle generate_identity(bytes root_seed);
+
+    [Throws=LatticeError]
+    GhostIdentityBundle recover_identity(sequence<string> mnemonic_words, string passphrase);
+
+    // Seed phrase
+    MnemonicResult generate_mnemonic();
+    boolean validate_mnemonic(sequence<string> words);
+    bytes derive_root_seed(sequence<string> words, string passphrase);
+
+    // PQXDH handshake
+    [Throws=LatticeError]
+    SessionKeysBundle perform_pqxdh(
+        bytes local_x25519_private,
+        bytes local_pq_private,
+        bytes remote_x25519_public,
+        bytes remote_pq_public
+    );
+
+    // Symmetric encryption
+    [Throws=LatticeError]
+    EncryptedMessage encrypt_message(
+        bytes plaintext,
+        bytes key
+    );
+
+    [Throws=LatticeError]
+    bytes decrypt_message(
+        EncryptedMessage payload,
+        bytes key
+    );
+
+    // Double Ratchet
+    RatchetStepResult ratchet_step(bytes chain_key);
+
+    // Shamir's Secret Sharing
+    [Throws=LatticeError]
+    sequence<ShamirShare> shamir_split(
+        bytes secret,
+        u8 total_shares,
+        u8 threshold
+    );
+
+    [Throws=LatticeError]
+    bytes shamir_recombine(sequence<ShamirShare> shares);
+
+    // Argon2id
+    [Throws=LatticeError]
+    bytes argon2_hash(
+        bytes password,
+        bytes salt,
+        u32 memory_kb,
+        u32 iterations,
+        u32 parallelism
+    );
+
+    // Erasure coding (for Desktop Swarm)
+    [Throws=LatticeError]
+    ErasureCodedData erasure_encode(
+        bytes data,
+        u32 data_shards,
+        u32 parity_shards
+    );
+
+    [Throws=LatticeError]
+    bytes erasure_decode(
+        ErasureCodedData coded,
+        u32 data_shards,
+        u32 parity_shards
+    );
+
+    // Proof of Work
+    [Throws=LatticeError]
+    ProofOfWork compute_proof_of_work(
+        bytes challenge,
+        u32 difficulty
+    );
+
+    boolean verify_proof_of_work(
+        bytes challenge,
+        ProofOfWork proof,
+        u32 difficulty
+    );
+
+    // Secure memory
+    void secure_zero(bytes data);
+
+    // ---- ML-KEM-768 standalone encap/decap ----
+    [Throws=LatticeError]
+    MlKemEncapResult ml_kem_768_encap(bytes public_key);
+
+    [Throws=LatticeError]
+    bytes ml_kem_768_decap(bytes ciphertext, bytes private_key);
+
+    // ---- Ed25519 (signing) ----
+    [Throws=LatticeError]
+    bytes ed25519_sign(bytes data, bytes private_key);
+    boolean ed25519_verify(bytes data, bytes signature, bytes public_key);
+
+    // ---- X25519 (ECDH) ----
+    [Throws=LatticeError]
+    bytes x25519_derive_public(bytes private_key);
+    [Throws=LatticeError]
+    bytes x25519_dh(bytes private_key, bytes peer_public);
+
+    // ---- HKDF-SHA256 ----
+    bytes hkdf_expand_raw(bytes ikm, bytes info, u32 length);
+
+    // ---- Safety Numbers ----
+    // Generate a 60-digit verification code from two parties' public keys.
+    // Both sides produce the same number (canonical key ordering).
+    // Used for MITM detection on deep-link-based contact exchange.
+    string generate_safety_number(
+        bytes my_signing_pub,
+        bytes my_exchange_pub,
+        bytes my_pq_pub,
+        bytes their_signing_pub,
+        bytes their_exchange_pub,
+        bytes their_pq_pub
+    );
+
+    // ---- Ratchet Delivery Tags (SURTs) ----
+    // Derive a single-use delivery tag from a message key.
+    // Each tag is unique and unlinkable to previous tags.
+    bytes derive_delivery_tag(bytes message_key);
+
+    // ---- ZK-SNARK (Groth16 on BN254) ----
+    [Throws=LatticeError]
+    ZkProofBundle zkp_generate_proof_raw(
+        bytes proving_key,
+        bytes attestation_token,
+        u64 timestamp,
+        u64 device_verdict
+    );
+    [Throws=LatticeError]
+    boolean zkp_verify_proof_raw(
+        bytes verifying_key,
+        bytes proof_bytes,
+        bytes public_inputs_bytes
+    );
+
+    // ---- Tor transport (Arti) ----
+    // Bootstrap a global Tor client. data_dir must be a writable directory
+    // (use Android app's filesDir + /tor). Blocks until the first circuit
+    // is ready. May take 5–30s on first run.
+    [Throws=LatticeError]
+    void tor_bootstrap(string data_dir);
+
+    // Returns true once bootstrap has completed and circuits are available.
+    boolean tor_is_connected();
+
+    // Send a length-prefixed request over a Tor circuit to destination:port
+    // and return the server's length-prefixed response. Intended for the
+    // Lattice server-side services (TURN/Tickets/DHT/PAKE) which all use
+    // the same 4-byte big-endian length + payload wire format.
+    [Throws=LatticeError]
+    bytes tor_send_raw(string destination, u32 port, bytes payload);
+
+    // Tear down the global Tor client. After this call, tor_bootstrap must
+    // be called again before any other tor_* function.
+    void tor_shutdown();
+};
+
+// --- Data structures ---
+
+dictionary GhostIdentityBundle {
+    bytes ed25519_signing_public;
+    bytes ed25519_signing_private;
+    bytes x25519_exchange_public;
+    bytes x25519_exchange_private;
+    bytes mlkem768_public;
+    bytes mlkem768_private;
+    bytes fingerprint;
+    string display_id;
+};
+
+dictionary MnemonicResult {
+    sequence<string> words;
+    bytes entropy;
+};
+
+dictionary SessionKeysBundle {
+    bytes sending_chain_key;
+    bytes receiving_chain_key;
+    bytes root_key;
+    bytes? encapsulated_ciphertext;
+};
+
+dictionary EncryptedMessage {
+    bytes ciphertext;
+    bytes nonce;
+    bytes tag;
+};
+
+dictionary RatchetStepResult {
+    bytes message_key;
+    bytes next_chain_key;
+};
+
+dictionary ShamirShare {
+    u8 index;
+    bytes data;
+    u8 threshold;
+    u8 total_shares;
+};
+
+dictionary ErasureCodedData {
+    sequence<bytes> shards;
+    u32 data_shard_count;
+    u32 parity_shard_count;
+    u64 original_size;
+};
+
+dictionary ProofOfWork {
+    u64 nonce;
+    bytes hash;
+};
+
+dictionary ZkProofBundle {
+    bytes proof_bytes;
+    bytes public_inputs_bytes;
+};
+
+dictionary MlKemEncapResult {
+    bytes ciphertext;
+    bytes shared_secret;
+};
+
+[Error]
+enum LatticeError {
+    "CryptoError",
+    "InvalidKeyLength",
+    "DecryptionFailed",
+    "AuthenticationFailed",
+    "InvalidMnemonic",
+    "InsufficientShares",
+    "ErasureCodeError",
+    "ProofOfWorkFailed",
+    "TorConnectionFailed",
+    "NetworkError",
+};
