@@ -70,6 +70,21 @@ We operate on a zero-trust model. This repository is maintained strictly for **p
 
 **Out-of-band PGP only.** Please contact `security@ivy.security`.
 
+Public key fingerprint:
+
+```
+F19F 34E8 E9F1 3F6D F418  1F38 0F1C 6872 0016 85D0
+```
+
+Import the armored public key from [`ivy-security-pubkey.asc`](ivy-security-pubkey.asc) at the root of this repository:
+
+```bash
+gpg --import ivy-security-pubkey.asc
+gpg --fingerprint security@ivy.security   # verify against the value above
+```
+
+The key is RSA-4096 (sign+cert primary, encrypt subkey), rotated annually.
+
 Do not open public GitHub issues for suspected vulnerabilities. A 72-hour acknowledgement SLA applies.
 
 ---
