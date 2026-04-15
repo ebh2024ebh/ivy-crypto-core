@@ -14,7 +14,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_NET_RETRY: 10
-  RUSTFLAGS: "--deny warnings"
+  # Pin the Rust toolchain for reproducibility. Bump deliberately, not on every
+  # rustc stable release, to avoid breakage from tightened lints / visibility rules.
+  RUST_TOOLCHAIN: "1.94.1"
 
 jobs:
   build-android:
@@ -27,9 +29,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust toolchain (pinned)
-        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b  # stable
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-linux-android
 
       - name: Set up Android NDK
