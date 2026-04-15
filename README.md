@@ -50,7 +50,7 @@ src/
 └── lib.rs                 — UniFFI-exported public API
 ```
 
-The public API is defined in [`ivy_crypto_core.udl`](ivy_crypto_core.udl) and exposed to client platforms (Android, iOS, desktop) via UniFFI-generated Kotlin and Swift bindings.
+The public API is defined in [`uniffi/ivy_crypto_core.udl`](uniffi/ivy_crypto_core.udl) and exposed to client platforms (Android, iOS, desktop) via UniFFI-generated Kotlin and Swift bindings.
 
 ---
 
