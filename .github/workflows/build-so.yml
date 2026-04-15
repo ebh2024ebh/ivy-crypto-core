@@ -51,6 +51,11 @@ jobs:
       - name: Cargo build --release --locked
         env:
           SOURCE_DATE_EPOCH: "1704067200"   # 2024-01-01 00:00 UTC — forces reproducible timestamps
+          # cc-rs (used by ring, zstd-sys, etc.) doesn't read Cargo's linker config.
+          # Point it at the versioned NDK clang explicitly.
+          CC_aarch64_linux_android:  "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+          CXX_aarch64_linux_android: "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++"
+          AR_aarch64_linux_android:  "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
         run: |
           cargo build \
             --release \
