@@ -18,6 +18,11 @@ env:
   # rustc stable release, to avoid breakage from tightened lints / visibility rules.
   RUST_TOOLCHAIN: "1.94.1"
 
+permissions:
+  contents: write        # create releases + upload assets
+  id-token: write        # SLSA provenance (OIDC token)
+  attestations: write    # attest-build-provenance
+
 jobs:
   build-android:
     name: aarch64-linux-android (deterministic release)
