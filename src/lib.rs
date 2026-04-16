@@ -440,19 +440,20 @@ pub struct MlKemEncapResult {
 /// (use locally for frame encryption). The ciphertext is 1088 bytes;
 /// the shared secret is 32 bytes.
 pub fn ml_kem_768_encap(public_key: Vec<u8>) -> Result<MlKemEncapResult, LatticeError> {
-    use ml_kem::{KemCore, MlKem768, EncodedSizeUser, Encapsulate};
+    use ml_kem::{MlKem768Params, EncodedSizeUser};
+    use ml_kem::kem::Encapsulate;
 
-    let ek_bytes: ml_kem::kem::EncapsulationKey<ml_kem::MlKem768Params> =
+    let ek_bytes: ml_kem::kem::EncapsulationKey<MlKem768Params> =
         ml_kem::kem::EncapsulationKey::from_bytes(
-            ml_kem::array::Array::try_from(public_key.as_slice())
+            &ml_kem::array::Array::try_from(public_key.as_slice())
                 .map_err(|_| LatticeError::CryptoError("Invalid ML-KEM-768 public key length".into()))?
         );
     let mut rng = rand::thread_rng();
     let (ct, ss) = ek_bytes.encapsulate(&mut rng)
         .map_err(|_| LatticeError::CryptoError("ML-KEM encapsulation failed".into()))?;
     Ok(MlKemEncapResult {
-        ciphertext: ct.as_bytes().to_vec(),
-        shared_secret: ss.as_bytes().to_vec(),
+        ciphertext: AsRef::<[u8]>::as_ref(&ct).to_vec(),
+        shared_secret: AsRef::<[u8]>::as_ref(&ss).to_vec(),
     })
 }
 
@@ -462,18 +463,19 @@ pub fn ml_kem_768_decap(
     ciphertext: Vec<u8>,
     private_key: Vec<u8>,
 ) -> Result<Vec<u8>, LatticeError> {
-    use ml_kem::{KemCore, MlKem768, EncodedSizeUser, Decapsulate};
+    use ml_kem::{MlKem768, MlKem768Params, EncodedSizeUser};
+    use ml_kem::kem::Decapsulate;
 
-    let dk_bytes: ml_kem::kem::DecapsulationKey<ml_kem::MlKem768Params> =
+    let dk_bytes: ml_kem::kem::DecapsulationKey<MlKem768Params> =
         ml_kem::kem::DecapsulationKey::from_bytes(
-            ml_kem::array::Array::try_from(private_key.as_slice())
+            &ml_kem::array::Array::try_from(private_key.as_slice())
                 .map_err(|_| LatticeError::CryptoError("Invalid ML-KEM-768 private key length".into()))?
         );
-    let ct = ml_kem::Ciphertext::<ml_kem::MlKem768Params>::try_from(ciphertext.as_slice())
+    let ct = ml_kem::Ciphertext::<MlKem768>::try_from(ciphertext.as_slice())
         .map_err(|_| LatticeError::CryptoError("Invalid ML-KEM-768 ciphertext length".into()))?;
     let ss = dk_bytes.decapsulate(&ct)
         .map_err(|_| LatticeError::CryptoError("ML-KEM decapsulation failed".into()))?;
-    Ok(ss.as_bytes().to_vec())
+    Ok(AsRef::<[u8]>::as_ref(&ss).to_vec())
 }
 
 /// Public bundle for UniFFI (flat struct, no tuples).

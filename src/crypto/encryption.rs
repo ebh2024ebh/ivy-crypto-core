@@ -5,7 +5,6 @@ use chacha20poly1305::{
 use zeroize::Zeroize;
 
 use crate::{EncryptedMessage, LatticeError};
-use super::nonce::NonceManager;
 
 use super::hkdf::hkdf_expand;
 

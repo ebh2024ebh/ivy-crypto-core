@@ -1,5 +1,6 @@
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret as X25519Secret};
-use ml_kem::{KemCore, MlKem768, EncodedSizeUser, Encapsulate, Decapsulate};
+use ml_kem::{MlKem768, MlKem768Params, EncodedSizeUser};
+use ml_kem::kem::{Encapsulate, Decapsulate};
 use zeroize::Zeroize;
 
 use crate::{LatticeError, SessionKeysBundle};
@@ -38,15 +39,15 @@ pub fn perform_pqxdh_impl(
     let mut classical_secret = classical_shared.as_bytes().to_vec();
 
     // --- Step 2: Post-Quantum ML-KEM-768 encapsulation ---
-    let pq_ek = ml_kem::kem::EncapsulationKey::<ml_kem::MlKem768Params>::from_bytes(
-        ml_kem::array::Array::try_from(remote_pq_public)
+    let pq_ek = ml_kem::kem::EncapsulationKey::<MlKem768Params>::from_bytes(
+        &ml_kem::array::Array::try_from(remote_pq_public)
             .map_err(|_| LatticeError::CryptoError("Invalid ML-KEM public key".into()))?
     );
     let mut rng = rand::thread_rng();
     let (encapsulated_ct, pq_shared_secret) = pq_ek.encapsulate(&mut rng)
         .map_err(|_| LatticeError::CryptoError("ML-KEM encapsulation failed".into()))?;
-    let mut pq_secret = pq_shared_secret.as_bytes().to_vec();
-    let encapsulated_bytes = encapsulated_ct.as_bytes().to_vec();
+    let mut pq_secret: Vec<u8> = AsRef::<[u8]>::as_ref(&pq_shared_secret).to_vec();
+    let encapsulated_bytes: Vec<u8> = AsRef::<[u8]>::as_ref(&encapsulated_ct).to_vec();
 
     // --- Step 3: Hybrid combination via HKDF ---
     //
@@ -138,15 +139,15 @@ pub fn decapsulate_pqxdh(
     let mut classical_secret = classical_shared.as_bytes().to_vec();
 
     // PQ decapsulation
-    let pq_dk = ml_kem::kem::DecapsulationKey::<ml_kem::MlKem768Params>::from_bytes(
-        ml_kem::array::Array::try_from(local_pq_private)
+    let pq_dk = ml_kem::kem::DecapsulationKey::<MlKem768Params>::from_bytes(
+        &ml_kem::array::Array::try_from(local_pq_private)
             .map_err(|_| LatticeError::CryptoError("Invalid ML-KEM private key".into()))?
     );
-    let pq_ct = ml_kem::Ciphertext::<ml_kem::MlKem768Params>::try_from(encapsulated_ciphertext)
+    let pq_ct = ml_kem::Ciphertext::<MlKem768>::try_from(encapsulated_ciphertext)
         .map_err(|_| LatticeError::CryptoError("Invalid ciphertext".into()))?;
     let pq_shared_secret = pq_dk.decapsulate(&pq_ct)
         .map_err(|_| LatticeError::CryptoError("ML-KEM decapsulation failed".into()))?;
-    let mut pq_secret = pq_shared_secret.as_bytes().to_vec();
+    let mut pq_secret: Vec<u8> = AsRef::<[u8]>::as_ref(&pq_shared_secret).to_vec();
 
     // Hybrid combination with canonical key ordering (matches encapsulate)
     let mut combined = Vec::with_capacity(classical_secret.len() + pq_secret.len());
