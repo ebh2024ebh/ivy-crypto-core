@@ -90,6 +90,54 @@ impl LatticeTorClient {
         Ok(response)
     }
 
+    /// Send a raw payload (no length prefix) over Tor and read back the
+    /// full response until EOF. Used for HTTP/1.1 with `Connection: close`
+    /// where the server signals end-of-response by half-closing the stream.
+    ///
+    /// The cap is the same 10 MiB ceiling as [send_message] to prevent a
+    /// malicious hidden service from exhausting client memory.
+    pub async fn send_http(
+        &self,
+        destination: &str,
+        port: u16,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, LatticeError> {
+        let mut stream = self
+            .client
+            .connect((destination, port))
+            .await
+            .map_err(|e| LatticeError::NetworkError(e.to_string()))?;
+
+        stream
+            .write_all(payload)
+            .await
+            .map_err(|e| LatticeError::NetworkError(e.to_string()))?;
+        stream
+            .flush()
+            .await
+            .map_err(|e| LatticeError::NetworkError(e.to_string()))?;
+
+        // Read until EOF, capped at 10 MiB defensively.
+        const MAX_RESPONSE: usize = 10 * 1024 * 1024;
+        let mut response = Vec::with_capacity(8 * 1024);
+        let mut buf = [0u8; 8 * 1024];
+        loop {
+            let n = stream
+                .read(&mut buf)
+                .await
+                .map_err(|e| LatticeError::NetworkError(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            if response.len() + n > MAX_RESPONSE {
+                return Err(LatticeError::NetworkError("HTTP response too large".into()));
+            }
+            response.extend_from_slice(&buf[..n]);
+        }
+
+        Ok(response)
+    }
+
     /// Clone the underlying Arc<TorClient>. Cheap; the handle is shared.
     pub fn clone_handle(&self) -> Self {
         Self {

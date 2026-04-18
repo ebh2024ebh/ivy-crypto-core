@@ -573,6 +573,38 @@ pub fn tor_send_raw(
     })
 }
 
+/// Send a raw HTTP/1.1 request over Tor to destination:port. No length-prefix
+/// framing in either direction — the server is expected to be a plain HTTP
+/// server (e.g. the guest-link service on port 9159). Returns the full
+/// response bytes read until the server half-closes the TCP stream (which it
+/// must do for each request, typically via `Connection: close`).
+pub fn tor_send_http(
+    destination: String,
+    port: u32,
+    payload: Vec<u8>,
+) -> Result<Vec<u8>, LatticeError> {
+    let slot = TOR_CLIENT
+        .get()
+        .ok_or_else(|| LatticeError::TorConnectionFailed("not bootstrapped".into()))?;
+
+    let client_clone = {
+        let guard = slot
+            .lock()
+            .map_err(|e| LatticeError::TorConnectionFailed(format!("mutex poisoned: {}", e)))?;
+        guard
+            .as_ref()
+            .ok_or_else(|| LatticeError::TorConnectionFailed("not bootstrapped".into()))?
+            .clone_handle()
+    };
+
+    let rt = tor_runtime();
+    rt.block_on(async move {
+        client_clone
+            .send_http(&destination, port as u16, &payload)
+            .await
+    })
+}
+
 /// Tear down the global Tor client.
 pub fn tor_shutdown() {
     if let Some(slot) = TOR_CLIENT.get() {

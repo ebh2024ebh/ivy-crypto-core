@@ -162,6 +162,14 @@ namespace ivy_crypto_core {
     [Throws=LatticeError]
     bytes tor_send_raw(string destination, u32 port, bytes payload);
 
+    // Send a raw HTTP/1.1 request (no length prefix) over a Tor circuit and
+    // read back the full response until the server half-closes the stream.
+    // Intended for the Sovereign Guest Link service on port 9159, which
+    // speaks plain HTTP (Hyper) so the public ivy.vin nginx proxy can share
+    // the same backend for browser traffic.
+    [Throws=LatticeError]
+    bytes tor_send_http(string destination, u32 port, bytes payload);
+
     // Tear down the global Tor client. After this call, tor_bootstrap must
     // be called again before any other tor_* function.
     void tor_shutdown();
