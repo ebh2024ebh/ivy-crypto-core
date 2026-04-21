@@ -51,7 +51,7 @@ fn tor_slot() -> &'static Mutex<Option<LatticeTorClient>> {
 }
 
 // Include UniFFI scaffolding
-uniffi::include_scaffolding!("ivy_crypto_core");
+uniffi::include_scaffolding!("lattice_core");
 
 // --- Error type ---
 
@@ -352,6 +352,108 @@ pub fn ed25519_verify(data: Vec<u8>, signature: Vec<u8>, public_key: Vec<u8>) ->
     vk.verify(&data, &signature).is_ok()
 }
 
+// =====================================================================
+// ML-DSA-65 (FIPS 204 "Module-Lattice Digital Signature Algorithm")
+// =====================================================================
+//
+// Post-quantum-secure digital signatures. Used as the lattice-side half
+// of our hybrid signature scheme — every critical authentication (group
+// call mint, identity commitments) is signed with BOTH Ed25519 and
+// ML-DSA-65. An adversary would need to break BOTH primitives to forge.
+//
+// Key sizes (ML-DSA-65 parameter set):
+//   public key:  1952 bytes
+//   private key: 4032 bytes
+//   signature:   3309 bytes
+//
+// Standard: NIST FIPS 204 (August 2024), parameter set ML-DSA-65.
+// Derived from the CRYSTALS-Dilithium submission (Dilithium-3).
+
+/// Output of `ml_dsa_65_keypair` — a fresh randomly-generated keypair.
+/// The private key MUST be kept in secure storage (Android Keystore /
+/// iOS Keychain / hardware-backed where available) and zeroized when
+/// destroyed. Exposed via UniFFI — matching UDL dictionary in
+/// `uniffi/lattice_core.udl`.
+#[derive(Debug, Clone)]
+pub struct MlDsa65Keypair {
+    /// 1952-byte ML-DSA-65 public key (verification key).
+    pub public_key: Vec<u8>,
+    /// 4032-byte ML-DSA-65 private key (signing key).
+    pub private_key: Vec<u8>,
+}
+
+/// Generate a fresh ML-DSA-65 keypair using the OS CSPRNG via getrandom.
+/// Matches the convention of `generate_ghost_identity` — caller is
+/// responsible for persisting the key material.
+///
+/// The key sizes below are fixed by the FIPS 204 parameter set:
+///   public key  = 1952 bytes (encoded rho + t1)
+///   private key = 4032 bytes (internal signing-key encoding)
+///   signature   = 3309 bytes (c̃ + z + h)
+pub fn ml_dsa_65_keypair() -> Result<MlDsa65Keypair, LatticeError> {
+    use ml_dsa::{KeyGen, MlDsa65, signature::Keypair};
+    use hybrid_array::Array;
+    // Feed OS randomness into FIPS 204 KeyGen_internal via a 32-byte seed.
+    // We do this rather than passing a generic CryptoRng because the
+    // rand_core version exported by ml-dsa (via `signature` 3.0-rc) is
+    // newer than the rand 0.8 CryptoRng that the rest of the crate uses.
+    // Deriving from seed gives byte-identical FIPS-204 output and lets
+    // us store the seed as the persistent private key (32 B vs 4 KB for
+    // the expanded form).
+    let mut seed = [0u8; 32];
+    getrandom::getrandom(&mut seed)
+        .map_err(|e| LatticeError::CryptoError(format!("getrandom: {}", e)))?;
+    let seed_arr: &Array<u8, _> = <&Array<u8, _>>::try_from(seed.as_slice())
+        .map_err(|_| LatticeError::InvalidKeyLength)?;
+    let kp = MlDsa65::from_seed(seed_arr);
+    Ok(MlDsa65Keypair {
+        public_key: kp.verifying_key().encode().to_vec(),
+        private_key: seed.to_vec(),
+    })
+}
+
+/// Sign `data` with an ML-DSA-65 private key (32-byte seed) using the
+/// deterministic variant. Returns a 3309-byte signature.
+pub fn ml_dsa_65_sign(data: Vec<u8>, private_key: Vec<u8>) -> Result<Vec<u8>, LatticeError> {
+    use ml_dsa::{MlDsa65, KeyGen};
+    use hybrid_array::Array;
+    let seed: &Array<u8, _> = <&Array<u8, _>>::try_from(private_key.as_slice())
+        .map_err(|_| LatticeError::InvalidKeyLength)?;
+    // from_seed returns a SigningKey; the deterministic signer is on
+    // the ExpandedSigningKey that SigningKey.signing_key() exposes.
+    let sk = MlDsa65::from_seed(seed);
+    let esk = sk.signing_key();
+    let sig = esk
+        .sign_deterministic(&data, b"")
+        .map_err(|_| LatticeError::InvalidKeyLength)?;
+    Ok(sig.encode().to_vec())
+}
+
+/// Verify an ML-DSA-65 signature. Returns `false` on any error
+/// (malformed key, wrong signature length, verification failure).
+pub fn ml_dsa_65_verify(
+    data: Vec<u8>,
+    signature: Vec<u8>,
+    public_key: Vec<u8>,
+) -> bool {
+    use ml_dsa::{MlDsa65, Signature, VerifyingKey};
+    use hybrid_array::Array;
+    let pk_arr: &Array<u8, _> = match <&Array<u8, _>>::try_from(public_key.as_slice()) {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let sig_arr: &Array<u8, _> = match <&Array<u8, _>>::try_from(signature.as_slice()) {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let vk = VerifyingKey::<MlDsa65>::decode(pk_arr);
+    let sig = match Signature::<MlDsa65>::decode(sig_arr) {
+        Some(s) => s,
+        None => return false,
+    };
+    vk.verify_with_context(&data, b"", &sig)
+}
+
 /// Derive an X25519 public key from a 32-byte private key.
 pub fn x25519_derive_public(private_key: Vec<u8>) -> Result<Vec<u8>, LatticeError> {
     use x25519_dalek::{PublicKey, StaticSecret};
@@ -575,9 +677,9 @@ pub fn tor_send_raw(
 
 /// Send a raw HTTP/1.1 request over Tor to destination:port. No length-prefix
 /// framing in either direction — the server is expected to be a plain HTTP
-/// server (e.g. the guest-link service on port 9159). Returns the full
-/// response bytes read until the server half-closes the TCP stream (which it
-/// must do for each request, typically via `Connection: close`).
+/// server (e.g. the `guest` service on port 9159). Returns the full response
+/// bytes read until the server half-closes the TCP stream (which it must do
+/// for each request, typically via `Connection: close`).
 pub fn tor_send_http(
     destination: String,
     port: u32,

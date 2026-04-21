@@ -1,7 +1,7 @@
-// ivy_crypto_core.udl — UniFFI interface definition for Kotlin/Swift bindings
+// lattice_core.udl — UniFFI interface definition for Kotlin/Swift bindings
 // This generates type-safe, memory-managed Kotlin classes from the Rust core.
 
-namespace ivy_crypto_core {
+namespace lattice_core {
     // Identity generation
     [Throws=LatticeError]
     GhostIdentityBundle generate_identity(bytes root_seed);
@@ -102,6 +102,16 @@ namespace ivy_crypto_core {
     [Throws=LatticeError]
     bytes ed25519_sign(bytes data, bytes private_key);
     boolean ed25519_verify(bytes data, bytes signature, bytes public_key);
+
+    // ---- ML-DSA-65 (FIPS 204 post-quantum signing, Dilithium-3) ----
+    // Used alongside Ed25519 for hybrid mint-request authentication.
+    // An attacker must break BOTH the lattice and elliptic-curve
+    // signature schemes to forge a group call.
+    [Throws=LatticeError]
+    MlDsa65Keypair ml_dsa_65_keypair();
+    [Throws=LatticeError]
+    bytes ml_dsa_65_sign(bytes data, bytes private_key);
+    boolean ml_dsa_65_verify(bytes data, bytes signature, bytes public_key);
 
     // ---- X25519 (ECDH) ----
     [Throws=LatticeError]
@@ -238,6 +248,12 @@ dictionary ZkProofBundle {
 dictionary MlKemEncapResult {
     bytes ciphertext;
     bytes shared_secret;
+};
+
+// Fresh ML-DSA-65 keypair — 1952 B public key, 4032 B private key.
+dictionary MlDsa65Keypair {
+    bytes public_key;
+    bytes private_key;
 };
 
 [Error]
