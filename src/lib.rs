@@ -51,7 +51,7 @@ fn tor_slot() -> &'static Mutex<Option<LatticeTorClient>> {
 }
 
 // Include UniFFI scaffolding
-uniffi::include_scaffolding!("lattice_core");
+uniffi::include_scaffolding!("ivy_crypto_core");
 
 // --- Error type ---
 
