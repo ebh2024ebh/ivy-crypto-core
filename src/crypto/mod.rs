@@ -1,4 +1,6 @@
+pub mod desktop_pair;
 pub mod encryption;
+pub mod envelope;
 pub mod hkdf;
 pub mod nonce;
 pub mod pqxdh;

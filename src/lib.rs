@@ -35,6 +35,21 @@ static TOR_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 /// is Sync and holds its own internal locks.
 static TOR_CLIENT: OnceLock<Mutex<Option<LatticeTorClient>>> = OnceLock::new();
 
+/// Active desktop-companion hidden services, keyed by the 16-byte pairing
+/// id (as a hex string — keeps the map hashable across FFI boundaries).
+/// Each entry owns an `HsHostHandle` that keeps its Arti onion service
+/// alive until `desktop_hs_stop()` is called from Kotlin. Stopping is
+/// idempotent; starting a second time for the same pairing replaces the
+/// prior handle and shuts the old one down cleanly.
+static HS_HANDLES: OnceLock<
+    Mutex<std::collections::HashMap<String, network::hs_host::HsHostHandle>>,
+> = OnceLock::new();
+
+fn hs_handles() -> &'static Mutex<std::collections::HashMap<String, network::hs_host::HsHostHandle>>
+{
+    HS_HANDLES.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
 fn tor_runtime() -> &'static tokio::runtime::Runtime {
     TOR_RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -373,7 +388,7 @@ pub fn ed25519_verify(data: Vec<u8>, signature: Vec<u8>, public_key: Vec<u8>) ->
 /// The private key MUST be kept in secure storage (Android Keystore /
 /// iOS Keychain / hardware-backed where available) and zeroized when
 /// destroyed. Exposed via UniFFI — matching UDL dictionary in
-/// `uniffi/lattice_core.udl`.
+/// `uniffi/ivy_crypto_core.udl`.
 #[derive(Debug, Clone)]
 pub struct MlDsa65Keypair {
     /// 1952-byte ML-DSA-65 public key (verification key).
@@ -759,4 +774,221 @@ pub fn zkp_verify_proof(
     public_inputs_bytes: Vec<u8>,
 ) -> Result<bool, LatticeError> {
     crypto::zkp::verify_proof(&verifying_key, &proof_bytes, &public_inputs_bytes)
+}
+
+// =====================================================================
+// Desktop Companion pairing (v0.1) — Kotlin-facing API
+// =====================================================================
+//
+// Re-export the phone-side pairing primitives from `crypto::desktop_pair`
+// so they show up in the UniFFI scaffold. The phone app feeds the scanned
+// QR URL + its identity keys and gets back a ready-to-POST blob plus the
+// 6-word SAS string to display.
+
+pub use crypto::desktop_pair::{
+    DesktopPairResponse as LatticeDesktopPairResponse,
+    PhoneIdentity as LatticePhoneIdentity,
+};
+
+/// Build a desktop-pair response blob for the phone side. See the
+/// `desktop_pair` module documentation for the full protocol spec.
+pub fn build_desktop_pair_response(
+    qr_url: String,
+    ed25519_seed: Vec<u8>,
+    ed25519_public: Vec<u8>,
+    mldsa_seed: Vec<u8>,
+    mldsa_public: Vec<u8>,
+    phone_onion: String,
+) -> Result<LatticeDesktopPairResponse, LatticeError> {
+    crypto::desktop_pair::build_desktop_pair_response(
+        qr_url,
+        crypto::desktop_pair::PhoneIdentity {
+            ed25519_seed,
+            ed25519_public,
+            mldsa_seed,
+            mldsa_public,
+        },
+        phone_onion,
+    )
+}
+
+/// Package a `DesktopPairResponse` into the JSON body the Android app
+/// should POST to `https://ivy.vin/api/pair/push`. Convenience wrapper —
+/// keeps the base64 + JSON construction on the Rust side so the Kotlin
+/// caller doesn't have to re-encode pre-signed fields.
+pub fn build_rendezvous_push_body(resp: LatticeDesktopPairResponse) -> String {
+    crypto::desktop_pair::build_rendezvous_push_body(&resp)
+}
+
+// =====================================================================
+// Desktop Companion — hidden-service hosting (v0.1 Phase 3)
+// =====================================================================
+//
+// The phone hosts one dedicated v3 onion per paired desktop. The onion
+// identity is derived deterministically from the pairing key so the
+// hostname is stable across app restarts without the phone having to
+// persist anything extra.
+//
+// Usage from Kotlin:
+//   1. `torBootstrap(filesDir + "/tor")` — one-time (already done by app).
+//   2. `desktopHsStart(pairingId, pairingKey, snapshotJson)` → returns the
+//      real `.onion` hostname; pass it back into the pairing blob.
+//   3. On revoke: `desktopHsStop(pairingId)`.
+//
+// Handles are owned by the global `HS_HANDLES` map — Kotlin doesn't have
+// to manage lifetimes. Calling start twice for the same pairing stops the
+// prior instance and launches a fresh one (idempotent re-start).
+
+/// Launch a dedicated onion service for `pairing_id`, return the onion
+/// hostname (e.g. `xyz....onion`). The service stays up until
+/// `desktop_hs_stop` is called OR the process exits.
+///
+/// * `pairing_id`   — 16 B (first 16 B of the pairing transcript hash)
+/// * `pairing_key`  — 32 B symmetric key derived by `build_desktop_pair_response`
+/// * `snapshot_json` — the canned inbox snapshot that the phone will seal
+///   and deliver as the first mirror frame when a desktop connects.
+pub fn desktop_hs_start(
+    pairing_id: Vec<u8>,
+    pairing_key: Vec<u8>,
+    snapshot_json: String,
+) -> Result<String, LatticeError> {
+    if pairing_id.len() != 16 {
+        return Err(LatticeError::InvalidKeyLength);
+    }
+    if pairing_key.len() != 32 {
+        return Err(LatticeError::InvalidKeyLength);
+    }
+    let mut pid = [0u8; 16];
+    pid.copy_from_slice(&pairing_id);
+    let mut pk = [0u8; 32];
+    pk.copy_from_slice(&pairing_key);
+
+    // Grab a cheap clone of the Arti client from the global slot.
+    let slot = TOR_CLIENT
+        .get()
+        .ok_or_else(|| LatticeError::TorConnectionFailed("tor not bootstrapped".into()))?;
+    let tor = {
+        let guard = slot
+            .lock()
+            .map_err(|e| LatticeError::TorConnectionFailed(format!("mutex poisoned: {}", e)))?;
+        guard
+            .as_ref()
+            .ok_or_else(|| {
+                LatticeError::TorConnectionFailed("tor client slot empty".into())
+            })?
+            .clone_handle()
+    };
+
+    let rt = tor_runtime();
+    let handle = rt.block_on(async move {
+        network::hs_host::hs_start(&tor, pid, pk, snapshot_json).await
+    })?;
+
+    let onion = handle.onion_hostname.clone();
+    let key = hex::encode(pid);
+    let map = hs_handles();
+    let mut guard = map
+        .lock()
+        .map_err(|e| LatticeError::NetworkError(format!("hs map poisoned: {}", e)))?;
+    // Re-start: drop the old handle (this stops its accept loop + releases
+    // the onion service); then insert the new one. The old handle's
+    // `Drop` won't tear down the service on its own, so we explicitly
+    // `stop()` before replacing.
+    if let Some(prev) = guard.remove(&key) {
+        prev.stop();
+    }
+    guard.insert(key, handle);
+
+    // Zeroize the local pairing_key copy — callers should also zero theirs.
+    pk.zeroize();
+    Ok(onion)
+}
+
+/// Stop the hidden service for a paired desktop and remove its handle
+/// from the global map. Safe to call when no such pairing exists.
+pub fn desktop_hs_stop(pairing_id: Vec<u8>) {
+    if pairing_id.len() != 16 {
+        return;
+    }
+    let key = hex::encode(&pairing_id);
+    if let Some(slot) = HS_HANDLES.get() {
+        if let Ok(mut guard) = slot.lock() {
+            if let Some(h) = guard.remove(&key) {
+                h.stop();
+            }
+        }
+    }
+}
+
+/// Return the onion hostname currently serving `pairing_id`, or `None`.
+/// Kotlin uses this after a crash-restart to verify whether a pairing's
+/// HS is still alive (before re-invoking `desktop_hs_start`).
+pub fn desktop_hs_onion(pairing_id: Vec<u8>) -> Option<String> {
+    if pairing_id.len() != 16 {
+        return None;
+    }
+    let key = hex::encode(&pairing_id);
+    let slot = HS_HANDLES.get()?;
+    let guard = slot.lock().ok()?;
+    guard.get(&key).map(|h| h.onion_hostname.clone())
+}
+
+/// Block up to `timeout_ms` waiting for an inbound decrypted plaintext
+/// frame from the desktop. Returns `None` on timeout (so Kotlin can
+/// loop + re-check cancellation) or the frame bytes when one arrives.
+/// Each call creates a fresh subscriber — frames delivered while no
+/// one is polling are dropped (they're broadcast, not queued).
+///
+/// Kotlin dispatches by parsing the JSON `type` field. See the mirror
+/// protocol spec in `ivy-desktop/src-tauri/src/ipc.rs`.
+pub fn desktop_hs_poll_inbound(
+    pairing_id: Vec<u8>,
+    timeout_ms: u64,
+) -> Result<Option<Vec<u8>>, LatticeError> {
+    if pairing_id.len() != 16 {
+        return Err(LatticeError::InvalidKeyLength);
+    }
+    let key = hex::encode(&pairing_id);
+    let mut rx = {
+        let slot = HS_HANDLES
+            .get()
+            .ok_or_else(|| LatticeError::NetworkError("no hs map".into()))?;
+        let guard = slot
+            .lock()
+            .map_err(|e| LatticeError::NetworkError(format!("hs map poisoned: {}", e)))?;
+        let h = guard
+            .get(&key)
+            .ok_or_else(|| LatticeError::NetworkError("no active pairing".into()))?;
+        h.inbound_tx.subscribe()
+    };
+    let rt = tor_runtime();
+    Ok(rt.block_on(async move {
+        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx.recv()).await {
+            Ok(Ok(frame)) => Some(frame),
+            Ok(Err(_)) => None, // channel closed or lagged
+            Err(_) => None,     // timeout
+        }
+    }))
+}
+
+/// Push a plaintext frame to the paired desktop right now. Kotlin builds
+/// the JSON (e.g. `{"type":"message",...}`), the Rust task seals it on
+/// the P2D chain and writes it to the HS stream. Returns the number of
+/// receivers the frame went out to (0 means no desktop is currently
+/// connected — the caller can treat that as a no-op).
+pub fn desktop_hs_push(pairing_id: Vec<u8>, plaintext: Vec<u8>) -> Result<u32, LatticeError> {
+    if pairing_id.len() != 16 {
+        return Err(LatticeError::InvalidKeyLength);
+    }
+    let key = hex::encode(&pairing_id);
+    let slot = HS_HANDLES
+        .get()
+        .ok_or_else(|| LatticeError::NetworkError("no hs map".into()))?;
+    let guard = slot
+        .lock()
+        .map_err(|e| LatticeError::NetworkError(format!("hs map poisoned: {}", e)))?;
+    let handle = guard
+        .get(&key)
+        .ok_or_else(|| LatticeError::NetworkError("no active pairing".into()))?;
+    Ok(handle.push_frame(plaintext) as u32)
 }

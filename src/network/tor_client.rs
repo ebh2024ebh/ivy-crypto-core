@@ -151,4 +151,10 @@ impl LatticeTorClient {
         let status = self.client.bootstrap_status();
         status.as_frac() >= 1.0
     }
+
+    /// Internal: clone the underlying `Arc<TorClient>` handle. Used by
+    /// `network::hs_host` which needs to call `launch_onion_service_with_hsid`.
+    pub(crate) fn inner_client_clone(&self) -> Arc<TorClient<PreferredRuntime>> {
+        Arc::clone(&self.client)
+    }
 }

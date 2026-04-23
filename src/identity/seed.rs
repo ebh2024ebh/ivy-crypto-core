@@ -30,7 +30,7 @@ pub fn generate_mnemonic_impl() -> MnemonicResult {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             Err(_) => {
-                eprintln!("ivy-crypto-core: CRITICAL — entropy source unavailable");
+                eprintln!("lattice-core: CRITICAL — entropy source unavailable");
                 return MnemonicResult {
                     words: vec![],
                     entropy: vec![],
@@ -42,7 +42,7 @@ pub fn generate_mnemonic_impl() -> MnemonicResult {
     let mnemonic = match Mnemonic::from_entropy_in(Language::English, &entropy) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("ivy-crypto-core: BIP39 from_entropy failed: {:?}", e);
+            eprintln!("lattice-core: BIP39 from_entropy failed: {:?}", e);
             return MnemonicResult {
                 words: vec![],
                 entropy: vec![],
@@ -125,7 +125,7 @@ pub fn argon2_derive(
         Err(e) => {
             // Fallback to safe defaults rather than crashing the app process.
             // Log the error via the platform logging mechanism.
-            eprintln!("ivy-crypto-core: Invalid Argon2 params ({:?}), using defaults", e);
+            eprintln!("lattice-core: Invalid Argon2 params ({:?}), using defaults", e);
             Params::new(65536, 3, 4, Some(output_len))
                 .unwrap_or_else(|_| Params::default())
         }
@@ -137,7 +137,7 @@ pub fn argon2_derive(
     if let Err(e) = argon2.hash_password_into(password, salt, &mut output) {
         // If hashing truly fails (shouldn't happen with valid params),
         // return zeros rather than panicking across FFI boundary.
-        eprintln!("ivy-crypto-core: Argon2id hashing failed: {:?}", e);
+        eprintln!("lattice-core: Argon2id hashing failed: {:?}", e);
         output.fill(0);
     }
 

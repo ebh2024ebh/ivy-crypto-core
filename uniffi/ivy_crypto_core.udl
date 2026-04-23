@@ -1,7 +1,7 @@
 // lattice_core.udl — UniFFI interface definition for Kotlin/Swift bindings
 // This generates type-safe, memory-managed Kotlin classes from the Rust core.
 
-namespace lattice_core {
+namespace ivy_crypto_core {
     // Identity generation
     [Throws=LatticeError]
     GhostIdentityBundle generate_identity(bytes root_seed);
@@ -183,6 +183,55 @@ namespace lattice_core {
     // Tear down the global Tor client. After this call, tor_bootstrap must
     // be called again before any other tor_* function.
     void tor_shutdown();
+
+    // ---- Desktop Companion pairing (v0.1) ----
+    // Runs the full phone-side pairing handshake in a single call. Kotlin
+    // hands in the scanned QR URL + its long-term identity keys and gets
+    // back a ready-to-POST JSON blob + 6 BIP-39 SAS words + the derived
+    // pairing key.
+    [Throws=LatticeError]
+    LatticeDesktopPairResponse build_desktop_pair_response(
+        string qr_url,
+        bytes ed25519_seed,
+        bytes ed25519_public,
+        bytes mldsa_seed,
+        bytes mldsa_public,
+        string phone_onion
+    );
+
+    // Convenience: wrap `resp.blob_json` into the `{session_nonce, blob_b64}`
+    // JSON body the `/api/pair/push` endpoint expects.
+    string build_rendezvous_push_body(LatticeDesktopPairResponse resp);
+
+    // --- Desktop Companion hidden-service hosting (phase 3) ---
+
+    // Launch a dedicated v3 onion for a paired desktop. Returns the
+    // onion hostname; stash it in the pairing blob so the desktop's
+    // mirror_client knows where to connect. Idempotent: calling twice
+    // for the same pairing_id stops the prior instance + starts a fresh one.
+    [Throws=LatticeError]
+    string desktop_hs_start(
+        bytes pairing_id,     // 16 B (first 16 B of transcript hash)
+        bytes pairing_key,    // 32 B symmetric pairing key
+        string snapshot_json  // canned inbox snapshot; sealed + sent once
+    );
+
+    // Stop the onion for a pairing_id. No-op if none active.
+    void desktop_hs_stop(bytes pairing_id);
+
+    // Return the onion hostname for a live pairing, or null if none.
+    string? desktop_hs_onion(bytes pairing_id);
+
+    // Push a plaintext frame to the connected desktop (sealed on the
+    // P2D chain + written to the HS stream). Returns the number of
+    // receivers it went to (0 = no desktop connected right now).
+    [Throws=LatticeError]
+    u32 desktop_hs_push(bytes pairing_id, bytes plaintext);
+
+    // Block up to `timeout_ms` for the next inbound plaintext frame
+    // from the desktop. Returns null on timeout (Kotlin re-polls).
+    [Throws=LatticeError]
+    bytes? desktop_hs_poll_inbound(bytes pairing_id, u64 timeout_ms);
 };
 
 // --- Data structures ---
@@ -248,6 +297,30 @@ dictionary ZkProofBundle {
 dictionary MlKemEncapResult {
     bytes ciphertext;
     bytes shared_secret;
+};
+
+// Desktop Companion pairing (v0.1) — output of the one-shot phone-side
+// handshake in `build_desktop_pair_response`. See `crypto::desktop_pair`
+// module for wire-format spec.
+dictionary LatticeDesktopPairResponse {
+    // Exactly-serialised JSON string matching the desktop's
+    // `pairing::decode_blob` parser (ordered keys: session_nonce,
+    // phone_x25519_pub, ml_kem_ct, phone_onion, phone_identity_ed_pub,
+    // phone_identity_mldsa_pub, sig_ed25519, sig_mldsa, sas_commit).
+    string blob_json;
+    // Hex(32 B) session nonce = rendezvous path segment for POST/GET.
+    string session_nonce_hex;
+    // 6 BIP-39 English words (2048-word list). Phone UI displays these
+    // for user to compare against desktop-side display.
+    sequence<string> sas_words;
+    // 32-byte derived pairing key. Persist under Keystore; never send.
+    bytes pairing_key;
+    // 16-byte pairing identifier = sha256(transcript)[..16]. Used as
+    // AAD in every envelope seal/open. MUST match desktop-side
+    // `secrets.transcript[..16]` bit-for-bit or decrypt fails.
+    bytes pairing_id;
+    // Echoed phone_onion (caller-supplied, passed through).
+    string phone_onion;
 };
 
 // Fresh ML-DSA-65 keypair — 1952 B public key, 4032 B private key.
