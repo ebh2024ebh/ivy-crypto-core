@@ -44,6 +44,11 @@ const QR_MAGIC:   &[u8; 8]  = b"IVY-PAIR";
 const QR_VERSION: u8        = 0x01;
 const ML_KEM_PUB_LEN: usize = 1568;
 
+/// Single opaque error returned for every ML-KEM input-validation or
+/// crypto-failure path in this module — Bug 10.5 mitigation. Mirrors
+/// the constant used on the desktop side in `pair_kex::KEM_OPAQUE_ERR`.
+const KEM_OPAQUE_ERR: &str = "pair: invalid kem input";
+
 /// Phone identity credentials passed into the pairing flow. The phone
 /// app loads these from Android Keystore and forwards them here; we
 /// never persist or copy them inside lattice-core.
@@ -128,12 +133,17 @@ pub fn build_desktop_pair_response(
     let phone_x_pub = XPub::from(&phone_x_priv);
 
     // 3. ML-KEM-1024 encapsulation against desktop's pubkey
+    //
+    // Bug 10.5 (decap oracle): collapse every ML-KEM input-validation
+    // or crypto-failure path to the same opaque error string. Distinct
+    // messages would let an attacker submitting QR payloads tell which
+    // step they tripped, which is the CCA oracle ML-KEM avoids.
     type EkType = <MlKem1024 as KemCore>::EncapsulationKey;
     let encoded_ek: ml_kem::Encoded<EkType> = Array::try_from(desktop_kem_pub_bytes.as_slice())
-        .map_err(|_| LatticeError::CryptoError("ML-KEM-1024 pubkey length".into()))?;
+        .map_err(|_| LatticeError::CryptoError(KEM_OPAQUE_ERR.into()))?;
     let ek = <EkType as EncodedSizeUser>::from_bytes(&encoded_ek);
     let (ct, ss_kem) = ek.encapsulate(&mut rng)
-        .map_err(|_| LatticeError::CryptoError("ML-KEM encapsulation failed".into()))?;
+        .map_err(|_| LatticeError::CryptoError(KEM_OPAQUE_ERR.into()))?;
 
     // 4. X25519 ECDH
     let ss_x = phone_x_priv.diffie_hellman(&XPub::from(desktop_x_pub));

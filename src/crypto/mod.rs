@@ -3,6 +3,7 @@ pub mod encryption;
 pub mod envelope;
 pub mod hkdf;
 pub mod nonce;
+pub mod pq_rekey;
 pub mod pqxdh;
 pub mod shamir;
 pub mod argon2;
@@ -10,3 +11,6 @@ pub mod erasure;
 pub mod pow;
 pub mod zkp;
 pub mod safety_number;
+
+#[cfg(test)]
+mod conformance;

@@ -563,11 +563,11 @@ pub fn ml_kem_768_encap(public_key: Vec<u8>) -> Result<MlKemEncapResult, Lattice
     let ek_bytes: ml_kem::kem::EncapsulationKey<MlKem768Params> =
         ml_kem::kem::EncapsulationKey::from_bytes(
             &ml_kem::array::Array::try_from(public_key.as_slice())
-                .map_err(|_| LatticeError::CryptoError("Invalid ML-KEM-768 public key length".into()))?
+                .map_err(|_| LatticeError::CryptoError(ML_KEM_OPAQUE_ERR.into()))?
         );
     let mut rng = rand::thread_rng();
     let (ct, ss) = ek_bytes.encapsulate(&mut rng)
-        .map_err(|_| LatticeError::CryptoError("ML-KEM encapsulation failed".into()))?;
+        .map_err(|_| LatticeError::CryptoError(ML_KEM_OPAQUE_ERR.into()))?;
     Ok(MlKemEncapResult {
         ciphertext: AsRef::<[u8]>::as_ref(&ct).to_vec(),
         shared_secret: AsRef::<[u8]>::as_ref(&ss).to_vec(),
@@ -586,14 +586,20 @@ pub fn ml_kem_768_decap(
     let dk_bytes: ml_kem::kem::DecapsulationKey<MlKem768Params> =
         ml_kem::kem::DecapsulationKey::from_bytes(
             &ml_kem::array::Array::try_from(private_key.as_slice())
-                .map_err(|_| LatticeError::CryptoError("Invalid ML-KEM-768 private key length".into()))?
+                .map_err(|_| LatticeError::CryptoError(ML_KEM_OPAQUE_ERR.into()))?
         );
     let ct = ml_kem::Ciphertext::<MlKem768>::try_from(ciphertext.as_slice())
-        .map_err(|_| LatticeError::CryptoError("Invalid ML-KEM-768 ciphertext length".into()))?;
+        .map_err(|_| LatticeError::CryptoError(ML_KEM_OPAQUE_ERR.into()))?;
     let ss = dk_bytes.decapsulate(&ct)
-        .map_err(|_| LatticeError::CryptoError("ML-KEM decapsulation failed".into()))?;
+        .map_err(|_| LatticeError::CryptoError(ML_KEM_OPAQUE_ERR.into()))?;
     Ok(AsRef::<[u8]>::as_ref(&ss).to_vec())
 }
+
+/// Single opaque error string returned for every ML-KEM input-validation
+/// or crypto-failure path in this module. Bug 10.5: distinguishable
+/// error strings on different failure modes are observable by an
+/// attacker probing the API and constitute a CCA-relevant oracle.
+const ML_KEM_OPAQUE_ERR: &str = "ml_kem: invalid input";
 
 /// Public bundle for UniFFI (flat struct, no tuples).
 #[derive(Debug, Clone)]

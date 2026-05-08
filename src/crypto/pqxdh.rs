@@ -6,6 +6,13 @@ use zeroize::Zeroize;
 use crate::{LatticeError, SessionKeysBundle};
 use super::hkdf::hkdf_expand;
 
+/// Single opaque error string returned for every PQXDH input-validation
+/// or decap-failure path. Per Bug 10.5 (decap oracle leaks), distinct
+/// error messages on different failure modes are observable by an
+/// attacker probing the API and constitute a CCA-relevant oracle.
+/// Collapsing them here removes the distinguishability surface entirely.
+const PQXDH_OPAQUE_ERR: &str = "pqxdh: invalid input";
+
 /// Perform a hybrid PQXDH key agreement combining:
 /// 1. Classical X25519 ECDH shared secret
 /// 2. ML-KEM-768 encapsulated shared secret
@@ -39,13 +46,21 @@ pub fn perform_pqxdh_impl(
     let mut classical_secret = classical_shared.as_bytes().to_vec();
 
     // --- Step 2: Post-Quantum ML-KEM-768 encapsulation ---
+    //
+    // Bug 10.5 / Audit floor 7.1 (decap oracle leaks): every error path
+    // below returns the SAME error variant with the SAME message string.
+    // Distinguishing "wrong-length input" from "encapsulation failed" via
+    // the response would let a probing attacker identify which step they
+    // tripped, which is the shape of the oracle ML-KEM's CCA security is
+    // designed to prevent. The safe default is "every input-validation
+    // error looks identical from the outside."
     let pq_ek = ml_kem::kem::EncapsulationKey::<MlKem768Params>::from_bytes(
         &ml_kem::array::Array::try_from(remote_pq_public)
-            .map_err(|_| LatticeError::CryptoError("Invalid ML-KEM public key".into()))?
+            .map_err(|_| LatticeError::CryptoError(PQXDH_OPAQUE_ERR.into()))?
     );
     let mut rng = rand::thread_rng();
     let (encapsulated_ct, pq_shared_secret) = pq_ek.encapsulate(&mut rng)
-        .map_err(|_| LatticeError::CryptoError("ML-KEM encapsulation failed".into()))?;
+        .map_err(|_| LatticeError::CryptoError(PQXDH_OPAQUE_ERR.into()))?;
     let mut pq_secret: Vec<u8> = AsRef::<[u8]>::as_ref(&pq_shared_secret).to_vec();
     let encapsulated_bytes: Vec<u8> = AsRef::<[u8]>::as_ref(&encapsulated_ct).to_vec();
 
@@ -138,15 +153,20 @@ pub fn decapsulate_pqxdh(
     let classical_shared = local_secret.diffie_hellman(&remote_public);
     let mut classical_secret = classical_shared.as_bytes().to_vec();
 
-    // PQ decapsulation
+    // PQ decapsulation — same single-opaque-error pattern as the
+    // encapsulation side. Bug 10.5 (decap oracle): if "wrong-length
+    // private key", "wrong-length ciphertext", and "decap failed"
+    // returned distinguishable strings, an attacker submitting
+    // ciphertexts could tell which step they tripped. They all
+    // collapse to PQXDH_OPAQUE_ERR.
     let pq_dk = ml_kem::kem::DecapsulationKey::<MlKem768Params>::from_bytes(
         &ml_kem::array::Array::try_from(local_pq_private)
-            .map_err(|_| LatticeError::CryptoError("Invalid ML-KEM private key".into()))?
+            .map_err(|_| LatticeError::CryptoError(PQXDH_OPAQUE_ERR.into()))?
     );
     let pq_ct = ml_kem::Ciphertext::<MlKem768>::try_from(encapsulated_ciphertext)
-        .map_err(|_| LatticeError::CryptoError("Invalid ciphertext".into()))?;
+        .map_err(|_| LatticeError::CryptoError(PQXDH_OPAQUE_ERR.into()))?;
     let pq_shared_secret = pq_dk.decapsulate(&pq_ct)
-        .map_err(|_| LatticeError::CryptoError("ML-KEM decapsulation failed".into()))?;
+        .map_err(|_| LatticeError::CryptoError(PQXDH_OPAQUE_ERR.into()))?;
     let mut pq_secret: Vec<u8> = AsRef::<[u8]>::as_ref(&pq_shared_secret).to_vec();
 
     // Hybrid combination with canonical key ordering (matches encapsulate)

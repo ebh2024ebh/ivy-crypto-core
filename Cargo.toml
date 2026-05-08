@@ -1,6 +1,6 @@
 [package]
 name = "ivy-crypto-core"
-version = "1.1.1"
+version = "1.2.0"
 edition = "2021"
 authors = ["Lattice Protocol"]
 description = "Memory-safe cryptographic core for the Lattice sovereign messaging protocol"
@@ -48,6 +48,11 @@ bip39 = { version = "2.0", features = ["std"] }
 
 # Secure memory
 zeroize = { version = "1.8", features = ["derive"] }
+
+# Constant-time comparison primitives. Bug 10.1 in the post-quantum
+# migration playbook (Symbolic Software, 2026): every comparison of
+# values derived from secret material must be constant-time.
+subtle = "2.6"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
