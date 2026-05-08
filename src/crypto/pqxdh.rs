@@ -43,6 +43,17 @@ pub fn perform_pqxdh_impl(
     };
 
     let classical_shared = local_secret.diffie_hellman(&remote_public);
+    // RFC 9180 §7.1.4 / hpke-ng audit (May 2026): a low-order or
+    // identity remote pubkey forces ECDH to produce all-zeros.
+    // Reject constant-time before we feed it into HKDF. The hybrid
+    // still has ML-KEM entropy backing it, but defense-in-depth.
+    {
+        use subtle::ConstantTimeEq;
+        let zero = [0u8; 32];
+        if classical_shared.as_bytes().ct_eq(&zero).into() {
+            return Err(LatticeError::CryptoError(PQXDH_OPAQUE_ERR.into()));
+        }
+    }
     let mut classical_secret = classical_shared.as_bytes().to_vec();
 
     // --- Step 2: Post-Quantum ML-KEM-768 encapsulation ---
@@ -151,6 +162,15 @@ pub fn decapsulate_pqxdh(
     };
 
     let classical_shared = local_secret.diffie_hellman(&remote_public);
+    // Same low-order-point defense as the encapsulation side.
+    // RFC 9180 §7.1.4 — reject all-zero ECDH output before HKDF.
+    {
+        use subtle::ConstantTimeEq;
+        let zero = [0u8; 32];
+        if classical_shared.as_bytes().ct_eq(&zero).into() {
+            return Err(LatticeError::CryptoError(PQXDH_OPAQUE_ERR.into()));
+        }
+    }
     let mut classical_secret = classical_shared.as_bytes().to_vec();
 
     // PQ decapsulation — same single-opaque-error pattern as the

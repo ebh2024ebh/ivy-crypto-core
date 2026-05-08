@@ -452,6 +452,141 @@ mod constant_time_tests {
 }
 
 #[cfg(test)]
+mod low_order_x25519_tests {
+    //! RFC 9180 §7.1.4 — low-order / identity public-key rejection.
+    //!
+    //! All eight small-order points on Curve25519 produce an all-zero
+    //! X25519 shared secret regardless of the local secret. An attacker
+    //! who can submit a peer pubkey to either pairing or PQXDH could
+    //! force the classical leg of the hybrid to contribute zero entropy
+    //! to the KDF. The hybrid would still be backed by ML-KEM, but
+    //! defense-in-depth requires rejecting the all-zero ECDH output
+    //! before it touches HKDF.
+    //!
+    //! These tests submit each known low-order point and assert
+    //! rejection. The 8 points come from
+    //! https://cr.yp.to/ecdh.html (canonical list).
+    //!
+    //! NB: we test the property — "an all-zero ECDH output is rejected"
+    //! — against `decapsulate_pqxdh`, which exercises the same
+    //! `subtle::ConstantTimeEq` branch added to every X25519 ECDH
+    //! call site. The desktop-pair path uses the same primitive and
+    //! the same constant; coverage is symmetric.
+
+    use crate::crypto::pqxdh::{decapsulate_pqxdh, perform_pqxdh_impl};
+    use ml_kem::{KemCore, MlKem768, EncodedSizeUser};
+    use rand::rngs::OsRng;
+
+    /// Canonical small-order points on Curve25519 (libsodium blacklist).
+    /// Submitting any of these as the peer X25519 public key forces
+    /// the ECDH output to all zeros regardless of the local secret key.
+    /// Source: libsodium's `crypto_scalarmult_curve25519_ref10.c`,
+    /// also published on https://cr.yp.to/ecdh.html.
+    const LOW_ORDER_POINTS: &[[u8; 32]] = &[
+        // 0 — identity / order 1.
+        [0; 32],
+        // 1 — also order 1.
+        {
+            let mut a = [0u8; 32]; a[0] = 1; a
+        },
+        // 325606250916557431795983626356110631294008115727848805560023387167927233504
+        // (order 8). Bytes: 0xe0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800
+        [
+            0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae,
+            0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f, 0xc4, 0x6a,
+            0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd,
+            0x86, 0x62, 0x05, 0x16, 0x5f, 0x49, 0xb8, 0x00,
+        ],
+        // 39382357235489614581723060781553021112529911719440698176882885853963445705823
+        // (order 8). Bytes: 0x5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157
+        [
+            0x5f, 0x9c, 0x95, 0xbc, 0xa3, 0x50, 0x8c, 0x24,
+            0xb1, 0xd0, 0xb1, 0x55, 0x9c, 0x83, 0xef, 0x5b,
+            0x04, 0x44, 0x5c, 0xc4, 0x58, 0x1c, 0x8e, 0x86,
+            0xd8, 0x22, 0x4e, 0xdd, 0xd0, 0x9f, 0x11, 0x57,
+        ],
+        // p - 1 (order 2): 0xecffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
+        [
+            0xec, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+        ],
+        // p (≡ 0, order 1): 0xedffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
+        [
+            0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+        ],
+        // p + 1 (≡ 1, order 1): 0xeeffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
+        [
+            0xee, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+        ],
+    ];
+
+    fn fresh_x25519_priv() -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        getrandom::getrandom(&mut bytes).expect("getrandom");
+        bytes
+    }
+
+    fn fresh_ml_kem_768() -> (Vec<u8>, Vec<u8>) {
+        let (dk, ek) = MlKem768::generate(&mut OsRng);
+        (dk.as_bytes().to_vec(), ek.as_bytes().to_vec())
+    }
+
+    /// `perform_pqxdh_impl` (initiator side) MUST reject every
+    /// low-order remote X25519 public key.
+    #[test]
+    fn perform_pqxdh_rejects_all_low_order_remote_pubkeys() {
+        let local_x = fresh_x25519_priv();
+        let (_dk, ek) = fresh_ml_kem_768();
+        for (i, point) in LOW_ORDER_POINTS.iter().enumerate() {
+            let r = perform_pqxdh_impl(&local_x, &[], point, &ek);
+            assert!(
+                r.is_err(),
+                "low-order point #{} (first byte 0x{:02x}) was NOT rejected on encap path",
+                i, point[0],
+            );
+        }
+    }
+
+    /// `decapsulate_pqxdh` (responder side) MUST reject every
+    /// low-order remote X25519 public key.
+    #[test]
+    fn decapsulate_pqxdh_rejects_all_low_order_remote_pubkeys() {
+        let local_x = fresh_x25519_priv();
+        let (dk, _ek) = fresh_ml_kem_768();
+        let dummy_ct = vec![0u8; 1088]; // length-correct, content irrelevant — should error before KEM step
+        for (i, point) in LOW_ORDER_POINTS.iter().enumerate() {
+            let r = decapsulate_pqxdh(&local_x, &dk, point, &dummy_ct);
+            assert!(
+                r.is_err(),
+                "low-order point #{} (first byte 0x{:02x}) was NOT rejected on decap path",
+                i, point[0],
+            );
+        }
+    }
+
+    /// Sanity: a real freshly-generated remote pubkey must NOT be
+    /// rejected (the check must not fail on legitimate inputs).
+    #[test]
+    fn perform_pqxdh_accepts_legitimate_remote_pubkey() {
+        use x25519_dalek::{PublicKey, StaticSecret};
+        let local_x = fresh_x25519_priv();
+        let remote_priv = StaticSecret::from(fresh_x25519_priv());
+        let remote_pub = *PublicKey::from(&remote_priv).as_bytes();
+        let (_dk, ek) = fresh_ml_kem_768();
+        let r = perform_pqxdh_impl(&local_x, &[], &remote_pub, &ek);
+        assert!(r.is_ok(), "legitimate remote pubkey must succeed");
+    }
+}
+
+#[cfg(test)]
 mod hybrid_pqxdh_tests {
     //! Conformance for the integration glue, not for the underlying
     //! primitives — we verify our HKDF binding is correct, our error

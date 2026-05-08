@@ -1,6 +1,6 @@
 [package]
 name = "ivy-crypto-core"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 authors = ["Lattice Protocol"]
 description = "Memory-safe cryptographic core for the Lattice sovereign messaging protocol"

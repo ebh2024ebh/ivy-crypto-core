@@ -146,7 +146,22 @@ pub fn build_desktop_pair_response(
         .map_err(|_| LatticeError::CryptoError(KEM_OPAQUE_ERR.into()))?;
 
     // 4. X25519 ECDH
+    //
+    // RFC 9180 §7.1.4 / hpke-ng audit floor (May 2026): a low-order
+    // or identity desktop public key forces the X25519 shared
+    // secret to all zeros, after which the key schedule becomes
+    // deterministic. The hybrid still derives entropy from ML-KEM,
+    // but defense-in-depth: reject the all-zero `ss_x` constant-time
+    // and refuse to derive a pairing key. Catches the 8 known
+    // small-order points on Curve25519 with one cheap check.
     let ss_x = phone_x_priv.diffie_hellman(&XPub::from(desktop_x_pub));
+    {
+        use subtle::ConstantTimeEq;
+        let zero = [0u8; 32];
+        if ss_x.as_bytes().ct_eq(&zero).into() {
+            return Err(LatticeError::CryptoError(KEM_OPAQUE_ERR.into()));
+        }
+    }
 
     // 5. HKDF to pairing_key
     let transcript = transcript_hash(
